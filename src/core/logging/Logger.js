@@ -41,7 +41,18 @@ class Logger {
         level: 'debug',
         format: winston.format.combine(
           winston.format.colorize(),
-          winston.format.timestamp(),
+          winston.format.timestamp({
+            format: () => {
+              const now = new Date();
+              const year = now.getFullYear();
+              const month = String(now.getMonth() + 1).padStart(2, '0');
+              const day = String(now.getDate()).padStart(2, '0');
+              const hours = String(now.getHours()).padStart(2, '0');
+              const minutes = String(now.getMinutes()).padStart(2, '0');
+              const seconds = String(now.getSeconds()).padStart(2, '0');
+              return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+            }
+          }),
           winston.format.printf(({ timestamp, level, message, ...meta }) => {
             return `${timestamp} [${level}]: ${message} ${
               Object.keys(meta).length ? JSON.stringify(meta) : ''
@@ -81,7 +92,18 @@ class Logger {
           filename: this.getLogFilePath(msisdn),
           level: 'info',
           format: winston.format.combine(
-            winston.format.timestamp(),
+            winston.format.timestamp({
+              format: () => {
+                const now = new Date();
+                const year = now.getFullYear();
+                const month = String(now.getMonth() + 1).padStart(2, '0');
+                const day = String(now.getDate()).padStart(2, '0');
+                const hours = String(now.getHours()).padStart(2, '0');
+                const minutes = String(now.getMinutes()).padStart(2, '0');
+                const seconds = String(now.getSeconds()).padStart(2, '0');
+                return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+              }
+            }),
             winston.format.printf(({ timestamp, level, message }) => {
               return `[${timestamp}] - ${message}`;
             })
@@ -94,10 +116,12 @@ class Logger {
   logSession(msisdn, message, meta = {}) {
     const sessionLogger = this.createSessionLogger(msisdn);
     sessionLogger.info(message, meta);
-    
+
     // Also log to system log
     this.logger.info(`[${msisdn}] ${message}`, meta);
   }
+
+
 
   logUssdRequest(msisdn, sessionId, shortcode, input) {
     const logMessage = `USSD REQUEST: msisdn=${msisdn}, session=${sessionId}, shortcode=${shortcode}, input="${input}"`;
@@ -105,9 +129,11 @@ class Logger {
   }
 
   logUssdResponse(msisdn, responseType, message, size) {
-    const logMessage = `USSD RESPONSE [${responseType}]: ${message}`;
+    // Convert multi-line menu to single line for cleaner logs
+    const singleLineMessage = message.replace(/\n/g, ' | ').replace(/\s+/g, ' ').trim();
+    const logMessage = `USSD RESPONSE [${responseType}]: ${singleLineMessage}`;
     this.logSession(msisdn, logMessage);
-    
+
     if (size) {
       this.logSession(msisdn, `MENU SIZE: ${size} bytes`);
     }

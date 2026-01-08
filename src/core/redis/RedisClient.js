@@ -24,7 +24,6 @@ class RedisClient {
             ...config.redis.options
           }
         });
-        logger.info('Redis Cluster initialized');
       } else {
         // Use single Redis instance
         const node = config.redis.nodes[0];
@@ -53,7 +52,6 @@ class RedisClient {
     });
 
     this.client.on('ready', () => {
-      logger.info('Redis client ready');
     });
 
     this.client.on('error', (error) => {

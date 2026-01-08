@@ -1,29 +1,32 @@
 const express = require('express');
 const router = express.Router();
 const ussdService = require('../services/UssdService');
-const middleware = require('../middleware/auth');
+const logger = require('../core/logging/Logger');
+const crypto = require('crypto');
+const { validateUssdRequest, validateApiKey } = require('../middleware/auth');
 
 // USSD endpoint
 router.get(
   '/ussd/:msisdn/:sessionId/:shortcode/:response?',
-  middleware.validateUssdRequest,
-  middleware.logRequest,
+  validateUssdRequest,
   async (req, res) => {
+    const { msisdn, sessionId, shortcode, response } = req.params;
+
     try {
-      const { msisdn, sessionId, shortcode, response } = req.params;
-      
       const ussdResponse = await ussdService.handleUssdRequest({
         msisdn,
         sessionId,
         shortcode,
         input: response || ''
       });
-      
+
       res.set('Content-Type', 'text/plain');
       res.send(ussdResponse);
+
     } catch (error) {
+      const errorResponse = `END An error occurred. Please try again later.`;
       res.set('Content-Type', 'text/plain');
-      res.send(`END An error occurred. Please try again later.`);
+      res.status(500).send(errorResponse);
     }
   }
 );
@@ -41,7 +44,7 @@ router.get('/health', (req, res) => {
 // Session cleanup endpoint (protected)
 router.post(
   '/sessions/cleanup',
-  middleware.validateApiKey,
+  validateApiKey,
   async (req, res) => {
     try {
       await ussdService.cleanupExpiredSessions();

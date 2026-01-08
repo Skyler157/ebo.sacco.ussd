@@ -8,7 +8,7 @@ class UssdService {
         this.sessionTimeout = 1800; // 30 minutes
     }
 
-    async handleUssdRequest(request) {
+  async handleUssdRequest(request) {
         const { msisdn, sessionId, shortcode, input } = request;
 
         // Log the request
@@ -75,13 +75,7 @@ class UssdService {
                 const mainMenu = await menuService.renderMenu('main_menu', session);
                 await sessionManager.updateMenuState(msisdn, sessionId, shortcode, 'main_menu');
 
-                // Add warning message if PIN expired
-                let responseText = mainMenu.text;
-                if (authResult.pinExpired) {
-                    responseText = "Note: Your PIN has expired. Please visit a branch to change it.\n\n" + responseText;
-                }
-
-                return this.formatContinueResponse(responseText);
+                return this.formatContinueResponse(mainMenu.text);
             } else {
                 // Authentication failed (not 000 or 101)
                 await sessionManager.endSession(msisdn, sessionId, shortcode);
@@ -103,6 +97,11 @@ class UssdService {
         if (!session.isAuthenticated && currentMenu !== 'welcome') {
             await sessionManager.endSession(msisdn, sessionId, shortcode);
             return this.formatEndResponse('Session expired. Please start again.');
+        }
+
+        // Special handling for PIN authentication on welcome screen
+        if (!session.isAuthenticated && currentMenu === 'welcome' && input && input !== '') {
+            return await this.handlePinAuthentication(session, input);
         }
 
         // Get current menu
@@ -147,17 +146,10 @@ class UssdService {
         const nextMenuInfo = menuService.getNextMenu(currentMenu, input, session);
 
         if (!nextMenuInfo) {
-            // If no next menu found, check if it's a valid option for current menu
-            if (currentMenuData.type === 'menu' && currentMenuData.options) {
-                if (!currentMenuData.options[input]) {
-                    return this.formatContinueResponse(
-                        `Invalid selection. Please try again.\n\n${currentMenuData.text}`
-                    );
-                }
-            }
-
-            await sessionManager.endSession(msisdn, sessionId, shortcode);
-            return this.formatEndResponse('Invalid selection. Session ended.');
+            // If no next menu found, show invalid selection error
+            return this.formatContinueResponse(
+                `Invalid selection. Please try again.\n\n${currentMenuData.text}`
+            );
         }
 
         // Update session state
@@ -173,6 +165,65 @@ class UssdService {
         return this.formatContinueResponse(nextMenu.text);
     }
 
+    async handlePinAuthentication(session, pin) {
+        const { msisdn, sessionId, shortcode } = session;
+
+        // Store PIN
+        await sessionManager.storeData(msisdn, sessionId, shortcode, 'pin', pin);
+
+        try {
+            // Call real API
+            const authResult = await apiService.authenticateCustomer(
+                msisdn,
+                sessionId,
+                shortcode,
+                pin
+            );
+
+            // Status 000 or 101 means authentication successful
+            // (101 = PIN change required, but still authenticated)
+            if (authResult.status === '000' || authResult.status === '101') {
+                // Set authentication data from API response only
+                if (!authResult.data.customerId || !authResult.data.customerName) {
+                    logger.logError(msisdn, new Error('Invalid authentication response - missing customer data'), {
+                        context: 'authentication',
+                        authResult
+                    });
+                    await sessionManager.endSession(msisdn, sessionId, shortcode);
+                    return this.formatEndResponse('Authentication failed. Customer data not available.');
+                }
+
+                await sessionManager.setAuthentication(msisdn, sessionId, shortcode, {
+                    customerId: authResult.data.customerId,
+                    customerName: authResult.data.customerName,
+                    accounts: authResult.data.accounts || []
+                });
+
+                await sessionManager.resetPinAttempts(msisdn, sessionId, shortcode);
+
+                // Store PIN expired flag if needed
+                if (authResult.pinExpired) {
+                    await sessionManager.storeData(msisdn, sessionId, shortcode, 'pinExpired', true);
+                }
+
+                // Show main menu
+                const mainMenu = await menuService.renderMenu('main_menu', session);
+                await sessionManager.updateMenuState(msisdn, sessionId, shortcode, 'main_menu');
+
+                return this.formatContinueResponse(mainMenu.text);
+            } else {
+                // Authentication failed (not 000 or 101)
+                await sessionManager.endSession(msisdn, sessionId, shortcode);
+                return this.formatEndResponse('Invalid PIN. Please try again.');
+            }
+        } catch (error) {
+            // Log authentication error and end session
+            logger.logError(msisdn, error, { context: 'authentication' });
+            await sessionManager.endSession(msisdn, sessionId, shortcode);
+            return this.formatEndResponse('Authentication failed. Please try again later.');
+        }
+    }
+
     async handleServiceMenu(menu, session) {
         const { msisdn, sessionId, shortcode } = session;
 
@@ -181,8 +232,11 @@ class UssdService {
 
             switch (menu.service) {
                 case 'validateWallet':
-                    const walletNumber = await sessionManager.getData(msisdn, sessionId, shortcode, 'recipientNumber') || msisdn;
-                    const network = menu.params.includes('mtn') ? 'mtn' : 'airtel';
+                case 'validateOwnWallet':
+                    const walletNumber = menu.service === 'validateOwnWallet' ?
+                        msisdn :
+                        await sessionManager.getData(msisdn, sessionId, shortcode, 'recipientNumber') || msisdn;
+                    const network = menu.id.includes('mtn') ? 'mtn' : 'airtel';
 
                     serviceResult = await apiService.validateWallet(msisdn, sessionId, shortcode, {
                         customerId: session.customerId,
@@ -191,25 +245,178 @@ class UssdService {
                     });
                     break;
 
+                case 'validateDepositNumber':
+                    const depositWalletNumber = await sessionManager.getData(msisdn, sessionId, shortcode, 'depositNumber');
+                    serviceResult = await apiService.validateWallet(msisdn, sessionId, shortcode, {
+                        customerId: session.customerId,
+                        walletNumber: depositWalletNumber,
+                        network: 'any' // Accept both networks for deposits
+                    });
+                    break;
+
                 case 'getAccounts':
-                    // This would typically come from session data after authentication
                     const accounts = session.accounts || [];
                     serviceResult = { status: '000', data: accounts };
                     break;
 
-                case 'processTransaction':
-                    const amount = await sessionManager.getData(msisdn, sessionId, shortcode, 'amount');
-                    const sourceAccount = await sessionManager.getData(msisdn, sessionId, shortcode, 'sourceAccount');
-                    const recipientNumber = await sessionManager.getData(msisdn, sessionId, shortcode, 'recipientNumber');
-                    const pin = await sessionManager.getData(msisdn, sessionId, shortcode, 'pin');
+                case 'getAreas':
+                    // Fetch areas from API
+                    serviceResult = await apiService.getStaticData(msisdn, sessionId, shortcode, 'AREAS');
+                    break;
+
+                case 'validateNWSCAccount':
+                case 'validateLightAccount':
+                case 'validateDSTVAccount':
+                    const accountNumber = await sessionManager.getData(msisdn, sessionId, shortcode, 'accountNumber');
+                    const billerType = menu.service.replace('validate', '').replace('Account', '');
+                    serviceResult = await apiService.validateAccount(msisdn, sessionId, shortcode, {
+                        customerId: session.customerId,
+                        accountNumber,
+                        billerType
+                    });
+                    break;
+
+                case 'validateAccount':
+                    const recipientAccount = await sessionManager.getData(msisdn, sessionId, shortcode, 'recipientAccount');
+                    serviceResult = await apiService.validateAccount(msisdn, sessionId, shortcode, {
+                        customerId: session.customerId,
+                        accountNumber: recipientAccount,
+                        billerType: 'INTERNAL'
+                    });
+                    break;
+
+                case 'getAccountBalance':
+                    const selectedAccount = await sessionManager.getData(msisdn, sessionId, shortcode, 'selectedAccount') ||
+                                           session.accounts[0]?.accountId;
+                    serviceResult = await apiService.getAccountBalance(msisdn, sessionId, shortcode, selectedAccount);
+                    break;
+
+                case 'getLoanAccounts':
+                    // Get loan accounts from customer session data or API call
+                    const allAccounts = session.accounts || [];
+                    const loanAccounts = allAccounts.filter(account =>
+                        account.accountType?.toLowerCase().includes('loan') ||
+                        account.accountType?.toLowerCase().includes('credit')
+                    );
+                    serviceResult = { status: '000', data: loanAccounts };
+                    break;
+
+                case 'getLoanBalance':
+                    // Get loan balance from API
+                    const selectedLoanAccount = await sessionManager.getData(msisdn, sessionId, shortcode, 'selectedLoanAccount') ||
+                                               (session.accounts || []).find(acc =>
+                                                   acc.accountType?.toLowerCase().includes('loan')
+                                               )?.accountId;
+
+                    if (selectedLoanAccount) {
+                        serviceResult = await apiService.getAccountBalance(msisdn, sessionId, shortcode, selectedLoanAccount);
+                    } else {
+                        serviceResult = { status: '001', message: 'No loan accounts found' };
+                    }
+                    break;
+
+                case 'getMiniStatement':
+                    const statementAccount = await sessionManager.getData(msisdn, sessionId, shortcode, 'selectedAccount') ||
+                                            session.accounts[0]?.accountId;
+                    serviceResult = await apiService.getMiniStatement(msisdn, sessionId, shortcode, statementAccount);
+                    break;
+
+                case 'processWithdrawTransaction':
+                    const withdrawAmount = await sessionManager.getData(msisdn, sessionId, shortcode, 'amount');
+                    const withdrawSourceAccount = await sessionManager.getData(msisdn, sessionId, shortcode, 'sourceAccount');
+                    const withdrawRecipientNumber = await sessionManager.getData(msisdn, sessionId, shortcode, 'recipientNumber');
+                    const withdrawPin = await sessionManager.getData(msisdn, sessionId, shortcode, 'pin');
+                    const withdrawNetwork = menu.id.includes('mtn') ? 'mtn' : 'airtel';
+
+                    serviceResult = await apiService.transferFunds(msisdn, sessionId, shortcode, {
+                        customerId: session.customerId,
+                        sourceAccount: withdrawSourceAccount,
+                        destinationAccount: withdrawRecipientNumber,
+                        amount: withdrawAmount,
+                        pin: withdrawPin,
+                        transferType: 'MOBILE_MONEY',
+                        network: withdrawNetwork
+                    });
+                    break;
+
+                case 'processDepositTransaction':
+                    const depositAmount = await sessionManager.getData(msisdn, sessionId, shortcode, 'amount');
+                    const depositNumber = await sessionManager.getData(msisdn, sessionId, shortcode, 'depositNumber');
+                    const depositDestinationAccount = await sessionManager.getData(msisdn, sessionId, shortcode, 'destinationAccount');
+                    const depositPin = await sessionManager.getData(msisdn, sessionId, shortcode, 'pin');
+
+                    serviceResult = await apiService.transferFunds(msisdn, sessionId, shortcode, {
+                        customerId: session.customerId,
+                        sourceAccount: depositNumber, // Mobile money as source
+                        destinationAccount: depositDestinationAccount,
+                        amount: depositAmount,
+                        pin: depositPin,
+                        transferType: 'DEPOSIT'
+                    });
+                    break;
+
+                case 'processAirtimeTransaction':
+                    const airtimeAmount = await sessionManager.getData(msisdn, sessionId, shortcode, 'amount');
+                    const airtimeSourceAccount = await sessionManager.getData(msisdn, sessionId, shortcode, 'sourceAccount');
+                    const airtimeRecipientNumber = await sessionManager.getData(msisdn, sessionId, shortcode, 'recipientNumber');
+                    const airtimePin = await sessionManager.getData(msisdn, sessionId, shortcode, 'pin');
+                    const airtimeNetwork = menu.id.includes('mtn') ? 'mtn' : 'airtel';
 
                     serviceResult = await apiService.purchaseAirtime(msisdn, sessionId, shortcode, {
                         customerId: session.customerId,
-                        sourceAccount,
-                        phoneNumber: recipientNumber || msisdn,
-                        amount,
-                        network: 'mtn', // Determine from context
-                        pin
+                        sourceAccount: airtimeSourceAccount,
+                        phoneNumber: airtimeRecipientNumber || msisdn,
+                        amount: airtimeAmount,
+                        network: airtimeNetwork,
+                        pin: airtimePin
+                    });
+                    break;
+
+                case 'processPaymentTransaction':
+                    const paymentAmount = await sessionManager.getData(msisdn, sessionId, shortcode, 'amount');
+                    const paymentSourceAccount = await sessionManager.getData(msisdn, sessionId, shortcode, 'sourceAccount');
+                    const paymentAccountNumber = await sessionManager.getData(msisdn, sessionId, shortcode, 'accountNumber');
+                    const paymentPin = await sessionManager.getData(msisdn, sessionId, shortcode, 'pin');
+                    const paymentBillerType = menu.id.includes('nwsc') ? 'NWSC' :
+                                            menu.id.includes('light') ? 'UMEME' :
+                                            menu.id.includes('dstv') ? 'DSTV' : 'OTHER';
+
+                    serviceResult = await apiService.processPayment(msisdn, sessionId, shortcode, {
+                        customerId: session.customerId,
+                        sourceAccount: paymentSourceAccount,
+                        accountNumber: paymentAccountNumber,
+                        amount: paymentAmount,
+                        billerType: paymentBillerType,
+                        pin: paymentPin
+                    });
+                    break;
+
+                case 'processTransferTransaction':
+                    const transferAmount = await sessionManager.getData(msisdn, sessionId, shortcode, 'amount');
+                    const transferSourceAccount = await sessionManager.getData(msisdn, sessionId, shortcode, 'sourceAccount');
+                    const transferDestinationAccount = await sessionManager.getData(msisdn, sessionId, shortcode, 'destinationAccount');
+                    const transferRemark = await sessionManager.getData(msisdn, sessionId, shortcode, 'remark') || '';
+                    const transferPin = await sessionManager.getData(msisdn, sessionId, shortcode, 'pin');
+
+                    serviceResult = await apiService.transferFunds(msisdn, sessionId, shortcode, {
+                        customerId: session.customerId,
+                        sourceAccount: transferSourceAccount,
+                        destinationAccount: transferDestinationAccount,
+                        amount: transferAmount,
+                        remark: transferRemark,
+                        pin: transferPin,
+                        transferType: 'INTERNAL'
+                    });
+                    break;
+
+                case 'changePIN':
+                    const oldPin = await sessionManager.getData(msisdn, sessionId, shortcode, 'oldPin');
+                    const newPin = await sessionManager.getData(msisdn, sessionId, shortcode, 'newPin');
+
+                    serviceResult = await apiService.changePIN(msisdn, sessionId, shortcode, {
+                        customerId: session.customerId,
+                        oldPin,
+                        newPin
                     });
                     break;
 

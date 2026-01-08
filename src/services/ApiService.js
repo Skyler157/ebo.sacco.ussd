@@ -12,17 +12,25 @@ class ApiService {
 
   async callService(serviceType, payload, msisdn = null) {
     const endpoint = this.endpoints[serviceType];
+    const requestId = payload.UNIQUEID || 'unknown';
 
     if (!endpoint) {
       throw new Error(`Unknown service type: ${serviceType}`);
     }
 
     try {
+      // Log API request details
       if (msisdn) {
-        logger.logApiRequest(msisdn, serviceType, payload);
+        logger.logSession(msisdn, `API REQUEST: ${serviceType.toUpperCase()} to ${endpoint}`);
+        logger.logSession(msisdn, `API REQUEST PAYLOAD: ${JSON.stringify(payload)}`);
       }
 
       const encryptedPayload = encryptionService.encryptPayload(payload);
+
+      // Log encrypted payload (for debugging)
+      if (msisdn) {
+        logger.logSession(msisdn, `API REQUEST ENCRYPTED: k=${encryptedPayload.k.substring(0, 8)}..., r=${encryptedPayload.r.substring(0, 20)}...`);
+      }
 
       const startTime = Date.now();
       const response = await axios.post(endpoint, encryptedPayload, {
@@ -35,12 +43,13 @@ class ApiService {
       });
       const duration = Date.now() - startTime;
 
-      if (msisdn) {
-        logger.logApiResponse(msisdn, serviceType, `Response received in ${duration}ms`);
-      }
-
       const responseBuffer = Buffer.from(response.data);
       const responseString = responseBuffer.toString('utf8').trim();
+
+      // Log encrypted response
+      if (msisdn) {
+        logger.logSession(msisdn, `API RESPONSE ENCRYPTED: ${responseString.substring(0, 50)}...`);
+      }
 
       const decryptedResponse = encryptionService.decryptApiResponse(
         responseString,
@@ -48,11 +57,29 @@ class ApiService {
         encryptedPayload.i
       );
 
-      return this.parseResponse(decryptedResponse, serviceType);
+      // Log decrypted response
+      if (msisdn) {
+        logger.logSession(msisdn, `API RESPONSE DECRYPTED: ${JSON.stringify(decryptedResponse)}`);
+      }
+
+      const parsedResponse = this.parseResponse(decryptedResponse, serviceType);
+
+      // Log final parsed response
+      if (msisdn) {
+        logger.logSession(msisdn, `API RESPONSE PARSED: Status=${parsedResponse.status}, Message="${parsedResponse.message}"`);
+      }
+
+      return parsedResponse;
 
     } catch (error) {
+      // Log API error details
       if (msisdn) {
-        logger.logError(msisdn, error, { serviceType });
+        logger.logSession(msisdn, `API ERROR: ${error.message}`);
+        if (error.response) {
+          logger.logSession(msisdn, `API ERROR RESPONSE: HTTP ${error.response.status} - ${JSON.stringify(error.response.data)}`);
+        } else if (error.request) {
+          logger.logSession(msisdn, `API ERROR REQUEST: No response received`);
+        }
       }
       throw this.handleApiError(error);
     }
@@ -452,6 +479,178 @@ class ApiService {
     };
 
     return await this.callService('other', payload, msisdn);
+  }
+
+  async validateAccount(msisdn, sessionId, shortcode, params) {
+    const payload = {
+      TRXSOURCE: "USSD",
+      CODEBASE: config.app.codebase,
+      APPNAME: config.app.name,
+      VERSIONNUMBER: config.app.version,
+      CUSTOMERID: params.customerId,
+      MOBILENUMBER: msisdn,
+      SHORTCODE: shortcode,
+      FORMID: "VALIDATE",
+      SESSIONID: sessionId,
+      UNIQUEID: encryptionService.generateTransactionId(),
+      COUNTRY: config.app.country,
+      BANKID: config.app.bankId,
+      MERCHANTID: null,
+      VALIDATE: {
+        BANKACCOUNTID: null,
+        MERCHANTID: null,
+        ACCOUNTID: params.accountNumber,
+        TRXDESCRIPTION: null,
+        AMOUNT: null,
+        MOBILENUMBER: null,
+        INFOFIELD1: params.billerType,
+        INFOFIELD2: null,
+        INFOFIELD3: null,
+        INFOFIELD4: null,
+        INFOFIELD5: null,
+        INFOFIELD6: null,
+        INFOFIELD7: null,
+        INFOFIELD8: null,
+        INFOFIELD9: null
+      },
+      ENCRYPTEDFIELDS: {
+        PIN: null
+      }
+    };
+
+    return await this.callService('validate', payload, msisdn);
+  }
+
+  async getMiniStatement(msisdn, sessionId, shortcode, accountNumber) {
+    const payload = {
+      TRXSOURCE: "USSD",
+      CODEBASE: config.app.codebase,
+      APPNAME: config.app.name,
+      VERSIONNUMBER: config.app.version,
+      CUSTOMERID: "",
+      MOBILENUMBER: msisdn,
+      SHORTCODE: shortcode,
+      FORMID: "PAYBILL",
+      SESSIONID: sessionId,
+      UNIQUEID: encryptionService.generateTransactionId(),
+      COUNTRY: config.app.country,
+      BANKID: config.app.bankId,
+      MERCHANTID: "STATEMENT",
+      PAYBILL: {
+        BANKACCOUNTID: accountNumber,
+        MERCHANTID: "STATEMENT",
+        ACCOUNTID: null,
+        TRXDESCRIPTION: null,
+        AMOUNT: null,
+        MOBILENUMBER: null,
+        INFOFIELD1: null,
+        INFOFIELD2: null,
+        INFOFIELD3: null,
+        INFOFIELD4: null,
+        INFOFIELD5: null,
+        INFOFIELD6: null,
+        INFOFIELD7: null,
+        INFOFIELD8: null,
+        INFOFIELD9: null
+      },
+      ENCRYPTEDFIELDS: {
+        PIN: null
+      }
+    };
+
+    return await this.callService('bank', payload, msisdn);
+  }
+
+  async processPayment(msisdn, sessionId, shortcode, params) {
+    const merchantMapping = {
+      'NWSC': '007001003',
+      'UMEME': '007001012',
+      'DSTV': '007001001',
+      'GOTV': '007001014',
+      'STARTIMES': '007001015'
+    };
+
+    const payload = {
+      TRXSOURCE: "USSD",
+      CODEBASE: config.app.codebase,
+      APPNAME: config.app.name,
+      VERSIONNUMBER: config.app.version,
+      CUSTOMERID: params.customerId,
+      MOBILENUMBER: msisdn,
+      SHORTCODE: shortcode,
+      FORMID: "PAYBILL",
+      SESSIONID: sessionId,
+      UNIQUEID: encryptionService.generateTransactionId(),
+      COUNTRY: config.app.country,
+      BANKID: config.app.bankId,
+      MERCHANTID: merchantMapping[params.billerType] || 'OTHER',
+      PAYBILL: {
+        BANKACCOUNTID: params.sourceAccount,
+        MERCHANTID: merchantMapping[params.billerType] || 'OTHER',
+        ACCOUNTID: params.accountNumber,
+        TRXDESCRIPTION: null,
+        AMOUNT: params.amount,
+        MOBILENUMBER: null,
+        INFOFIELD1: params.billerType,
+        INFOFIELD2: null,
+        INFOFIELD3: null,
+        INFOFIELD4: null,
+        INFOFIELD5: null,
+        INFOFIELD6: null,
+        INFOFIELD7: null,
+        INFOFIELD8: null,
+        INFOFIELD9: null
+      },
+      ENCRYPTEDFIELDS: {
+        PIN: encryptionService.encryptPin(params.pin)
+      }
+    };
+
+    return await this.callService('purchase', payload, msisdn);
+  }
+
+  async changePIN(msisdn, sessionId, shortcode, params) {
+    const payload = {
+      TRXSOURCE: "USSD",
+      CODEBASE: config.app.codebase,
+      APPNAME: config.app.name,
+      VERSIONNUMBER: config.app.version,
+      CUSTOMERID: params.customerId,
+      MOBILENUMBER: msisdn,
+      SHORTCODE: shortcode,
+      FORMID: "CHANGEPIN",
+      SESSIONID: sessionId,
+      UNIQUEID: encryptionService.generateTransactionId(),
+      COUNTRY: config.app.country,
+      BANKID: config.app.bankId,
+      MERCHANTID: null,
+      CHANGEPIN: {
+        LOGINTYPE: null,
+        PINTYPE: null,
+        BANKACCOUNTID: null,
+        MERCHANTID: null,
+        ACCOUNTID: null,
+        TRXDESCRIPTION: null,
+        AMOUNT: null,
+        MOBILENUMBER: null,
+        INFOFIELD1: null,
+        INFOFIELD2: null,
+        INFOFIELD3: null,
+        INFOFIELD4: null,
+        INFOFIELD5: null,
+        INFOFIELD6: null,
+        INFOFIELD7: null,
+        INFOFIELD8: null,
+        INFOFIELD9: null
+      },
+      ENCRYPTEDFIELDS: {
+        OLDPIN: encryptionService.encryptPin(params.oldPin),
+        NEWPIN: encryptionService.encryptPin(params.newPin),
+        CONFIRMPIN: encryptionService.encryptPin(params.newPin)
+      }
+    };
+
+    return await this.callService('authenticate', payload, msisdn);
   }
 }
 

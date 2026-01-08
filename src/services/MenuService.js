@@ -137,10 +137,10 @@ class MenuService {
 
 getNextMenu(currentMenuId, input, sessionData) {
   const currentMenu = this.getMenu(currentMenuId);
-  
+
   if (currentMenu.type === 'menu' && currentMenu.options) {
     const option = currentMenu.options[input];
-    
+
     if (option) {
       return {
         next: option.next,
@@ -149,7 +149,7 @@ getNextMenu(currentMenuId, input, sessionData) {
       };
     }
   }
-  
+
   // If current menu has a next property, use it
   if (currentMenu.next) {
     return {
@@ -158,11 +158,11 @@ getNextMenu(currentMenuId, input, sessionData) {
       data: {}
     };
   }
-  
-  // Default navigation for common flows
+
+  // Default navigation for common flows (fallback)
   const defaultNavigation = {
     'welcome': { next: 'main_menu', action: 'navigate' },
-    'main_menu': { 
+    'main_menu': {
       '1': { next: 'withdraw_menu', action: 'navigate' },
       '2': { next: 'deposit_menu', action: 'navigate' },
       '3': { next: 'airtime_menu', action: 'navigate' },
@@ -174,11 +174,11 @@ getNextMenu(currentMenuId, input, sessionData) {
       '0': { next: 'end_session', action: 'end_session' }
     }
   };
-  
+
   if (defaultNavigation[currentMenuId] && defaultNavigation[currentMenuId][input]) {
     return defaultNavigation[currentMenuId][input];
   }
-  
+
   return null;
 }
     async processMenuAction(menu, input, sessionData) {

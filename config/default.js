@@ -1,10 +1,10 @@
 module.exports = {
   app: {
-    name: process.env.APP_NAME || 'HFB',
-    version: process.env.APP_VERSION || '1.0.0',
-    bankId: process.env.BANK_ID || 'HFB_BANK_ID',
+    name: process.env.APP_NAME || 'EBOSACCO',
+    version: process.env.APP_VERSION || '2.0.0',
+    bankId: process.env.BANK_ID || 'EBO_SACCO_BANK_ID',
     country: process.env.COUNTRY || 'UGANDA',
-    codebase: 'HFBUSSD'
+    codebase: 'EBOSACCOUSSD'
   },
 
   redis: {

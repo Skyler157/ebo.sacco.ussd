@@ -13,7 +13,7 @@ const PORT = process.env.PORT || 6060;
 
 // Security middleware
 app.use(helmet({
-  contentSecurityPolicy: false, // Disable for USSD responses
+  contentSecurityPolicy: false, 
   crossOriginEmbedderPolicy: false
 }));
 
@@ -26,20 +26,6 @@ app.use(cors());
 // Body parsing
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-// Request logging
-app.use((req, res, next) => {
-  const startTime = Date.now();
-  res.on('finish', () => {
-    const duration = Date.now() - startTime;
-    logger.info(`${req.method} ${req.url}`, {
-      status: res.statusCode,
-      duration,
-      userAgent: req.get('User-Agent')
-    });
-  });
-  next();
-});
 
 // Routes
 app.use('/api', ussdRoutes);
@@ -76,14 +62,10 @@ app.use((err, req, res, next) => {
 // Start server
 const server = app.listen(PORT, () => {
   logger.info(`EBO SACCO USSD Server started on port ${PORT}`);
-  logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
-  logger.info(`App Name: ${config.app.name}`);
-  logger.info(`Version: ${config.app.version}`);
 });
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
-  logger.info('SIGTERM received. Shutting down gracefully...');
   
   server.close(() => {
     logger.info('HTTP server closed');
@@ -97,7 +79,6 @@ process.on('SIGTERM', () => {
 });
 
 process.on('SIGINT', () => {
-  logger.info('SIGINT received. Shutting down...');
   server.close(() => {
     process.exit(0);
   });
