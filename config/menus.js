@@ -15,7 +15,7 @@ module.exports = {
   main_menu: {
     id: 'main_menu',
     type: 'menu',
-    text: '1. Withdraw\n2. Deposit\n3. Airtime\n4. Payments\n5. Balance\n6. Internal Transfers\n7. Mini Statement\n8. Settings\n0. Exit',
+    text: 'Dear {customerName}, Welcome to EBO SACCO.\n\n1. Withdraw\n2. Deposit\n3. Airtime\n4. Payments\n5. Balance\n6. Internal Transfers\n7. Mini Statement\n8. Settings\n00. Exit',
     options: {
       '1': { next: 'withdraw_menu', action: 'navigate' },
       '2': { next: 'deposit_menu', action: 'navigate' },
@@ -26,40 +26,67 @@ module.exports = {
       '7': { next: 'mini_statement_menu', action: 'navigate' },
       '8': { next: 'settings_menu', action: 'navigate' },
       '0': { action: 'end_session', text: 'Thank you for using EBO SACCO.' }
-    },
-    validation: 'menu_option'
+    }
   },
 
   // ================================
-  // WITHDRAW MENU FLOW
+  // WITHDRAW MENU FLOW (Mobile Money)
   // ================================
   withdraw_menu: {
     id: 'withdraw_menu',
     type: 'menu',
-    text: 'Withdraw\n1. Send to MTN Money\n2. Send to Airtel Money\n0. Back',
+    text: 'Withdraw\n\n1. Send to MTN Money\n2. Send to Airtel Money\n\n0. Home\n00. Exit',
     options: {
-      '1': { next: 'mtn_wallet_type', action: 'navigate' },
-      '2': { next: 'airtel_wallet_type', action: 'navigate' },
-      '0': { next: 'main_menu', action: 'navigate' }
+      '1': { next: 'withdraw_mtn_options', action: 'navigate' },
+      '2': { next: 'withdraw_airtel_options', action: 'navigate' },
+      '0': { next: 'main_menu', action: 'navigate' },
+      '00': { action: 'end_session', text: 'Thank you for using EBO SACCO.' }
     }
   },
 
-  // MTN Withdraw Flow
-  mtn_wallet_type: {
-    id: 'mtn_wallet_type',
+  // MTN Money Options
+  withdraw_mtn_options: {
+    id: 'withdraw_mtn_options',
     type: 'menu',
-    text: 'Send to MTN Money\n1. Send to own number\n2. Send to other number\n0. Back',
+    text: 'Send to MTN Money number\n\n1. Send to own MTN number\n2. Send to other MTN number\n\n0. Back\n00. Home\n000. Exit',
     options: {
-      '1': { next: 'mtn_own_validate', action: 'navigate' },
-      '2': { next: 'mtn_other_number', action: 'navigate' },
-      '0': { next: 'withdraw_menu', action: 'navigate' }
+      '1': { next: 'withdraw_mtn_own', action: 'navigate' },
+      '2': { next: 'withdraw_mtn_other', action: 'navigate' },
+      '0': { next: 'withdraw_menu', action: 'navigate' },
+      '00': { next: 'main_menu', action: 'navigate' },
+      '000': { action: 'end_session', text: 'Thank you for using EBO SACCO.' }
     }
   },
 
-  mtn_other_number: {
-    id: 'mtn_other_number',
+  // Airtel Money Options
+  withdraw_airtel_options: {
+    id: 'withdraw_airtel_options',
+    type: 'menu',
+    text: 'Send to Airtel Money\n\n1. Send to own Airtel number\n2. Send to other Airtel number\n\n0. Back\n00. Home\n000. Exit',
+    options: {
+      '1': { next: 'withdraw_airtel_own', action: 'navigate' },
+      '2': { next: 'withdraw_airtel_other', action: 'navigate' },
+      '0': { next: 'withdraw_menu', action: 'navigate' },
+      '00': { next: 'main_menu', action: 'navigate' },
+      '000': { action: 'end_session', text: 'Thank you for using EBO SACCO.' }
+    }
+  },
+
+  // MTN Own Number
+  withdraw_mtn_own: {
+    id: 'withdraw_mtn_own',
+    type: 'service',
+    service: 'validateOwnWallet',
+    serviceType: 'validate',
+    onSuccess: { next: 'withdraw_mtn_confirm', action: 'navigate' },
+    onError: { next: 'withdraw_validation_error', action: 'navigate' }
+  },
+
+  // MTN Other Number Input
+  withdraw_mtn_other: {
+    id: 'withdraw_mtn_other',
     type: 'input',
-    text: 'Enter the MTN mobile number',
+    text: 'Enter the MTN mobile number\n\n0. Back\n00. Home\n000. Exit',
     action: 'validate_mtn_number',
     storeAs: 'recipientNumber',
     validation: {
@@ -67,46 +94,25 @@ module.exports = {
       network: 'mtn',
       required: true
     },
-    errorMessage: 'Invalid MTN number. Please enter a valid MTN number starting with 07, 08 or 09',
-    next: 'mtn_validate_wallet'
+    errorMessage: 'Invalid MTN number',
+    next: 'withdraw_mtn_validate'
   },
 
-  mtn_validate_wallet: {
-    id: 'mtn_validate_wallet',
-    type: 'service',
-    service: 'validateWallet',
-    serviceType: 'validate',
-    params: ['recipientNumber', 'network'],
-    onSuccess: { next: 'withdraw_enter_amount', action: 'navigate' },
-    onError: { next: 'mtn_other_number', action: 'navigate' }
-  },
-
-  mtn_own_validate: {
-    id: 'mtn_own_validate',
+  // Airtel Own Number
+  withdraw_airtel_own: {
+    id: 'withdraw_airtel_own',
     type: 'service',
     service: 'validateOwnWallet',
     serviceType: 'validate',
-    params: ['msisdn', 'network'],
-    onSuccess: { next: 'withdraw_enter_amount', action: 'navigate' },
-    onError: { next: 'error', action: 'navigate' }
+    onSuccess: { next: 'withdraw_airtel_confirm', action: 'navigate' },
+    onError: { next: 'withdraw_validation_error', action: 'navigate' }
   },
 
-  // Airtel Withdraw Flow
-  airtel_wallet_type: {
-    id: 'airtel_wallet_type',
-    type: 'menu',
-    text: 'Send to Airtel Money\n1. Send to own number\n2. Send to other number\n0. Back',
-    options: {
-      '1': { next: 'airtel_own_validate', action: 'navigate' },
-      '2': { next: 'airtel_other_number', action: 'navigate' },
-      '0': { next: 'withdraw_menu', action: 'navigate' }
-    }
-  },
-
-  airtel_other_number: {
-    id: 'airtel_other_number',
+  // Airtel Other Number Input
+  withdraw_airtel_other: {
+    id: 'withdraw_airtel_other',
     type: 'input',
-    text: 'Enter the Airtel mobile number',
+    text: 'Enter the Airtel mobile number\n\n0. Back\n00. Home\n000. Exit',
     action: 'validate_airtel_number',
     storeAs: 'recipientNumber',
     validation: {
@@ -114,35 +120,71 @@ module.exports = {
       network: 'airtel',
       required: true
     },
-    errorMessage: 'Invalid Airtel number. Please enter a valid Airtel number starting with 07, 08 or 09',
-    next: 'airtel_validate_wallet'
+    errorMessage: 'Invalid Airtel number',
+    next: 'withdraw_airtel_validate'
   },
 
-  airtel_validate_wallet: {
-    id: 'airtel_validate_wallet',
+  // MTN Validation
+  withdraw_mtn_validate: {
+    id: 'withdraw_mtn_validate',
     type: 'service',
     service: 'validateWallet',
     serviceType: 'validate',
-    params: ['recipientNumber', 'network'],
-    onSuccess: { next: 'withdraw_enter_amount', action: 'navigate' },
-    onError: { next: 'airtel_other_number', action: 'navigate' }
+    params: ['recipientNumber', 'mtn'],
+    onSuccess: { next: 'withdraw_mtn_confirm', action: 'navigate' },
+    onError: { next: 'withdraw_validation_error', action: 'navigate' }
   },
 
-  airtel_own_validate: {
-    id: 'airtel_own_validate',
+  // Airtel Validation
+  withdraw_airtel_validate: {
+    id: 'withdraw_airtel_validate',
     type: 'service',
-    service: 'validateOwnWallet',
+    service: 'validateWallet',
     serviceType: 'validate',
-    params: ['msisdn', 'network'],
-    onSuccess: { next: 'withdraw_enter_amount', action: 'navigate' },
-    onError: { next: 'error', action: 'navigate' }
+    params: ['recipientNumber', 'airtel'],
+    onSuccess: { next: 'withdraw_airtel_confirm', action: 'navigate' },
+    onError: { next: 'withdraw_validation_error', action: 'navigate' }
   },
 
-  // Common withdraw flow
-  withdraw_enter_amount: {
-    id: 'withdraw_enter_amount',
+  // MTN Confirmation
+  withdraw_mtn_confirm: {
+    id: 'withdraw_mtn_confirm',
+    type: 'menu',
+    text: 'Confirm MTN mobile wallet details\n\n{recipientName}\n\n1. Confirm\n2. Cancel',
+    options: {
+      '1': { next: 'withdraw_amount', action: 'navigate' },
+      '2': { next: 'withdraw_menu', action: 'navigate' }
+    }
+  },
+
+  // Airtel Confirmation
+  withdraw_airtel_confirm: {
+    id: 'withdraw_airtel_confirm',
+    type: 'menu',
+    text: 'Confirm Airtel mobile wallet details\n\n{recipientName}\n\n1. Confirm\n2. Cancel',
+    options: {
+      '1': { next: 'withdraw_amount', action: 'navigate' },
+      '2': { next: 'withdraw_menu', action: 'navigate' }
+    }
+  },
+
+  // Validation Error
+  withdraw_validation_error: {
+    id: 'withdraw_validation_error',
+    type: 'static',
+    text: 'Invalid mobile number or wallet not found\n\n0. Back\n00. Home\n000. Exit',
+    options: {
+      '0': { next: 'withdraw_menu', action: 'navigate' },
+      '00': { next: 'main_menu', action: 'navigate' },
+      '000': { action: 'end_session', text: 'Thank you for using EBO SACCO.' }
+    }
+  },
+
+  // Amount Entry
+  withdraw_amount: {
+    id: 'withdraw_amount',
     type: 'input',
-    text: 'Enter Amount',
+    text: 'Enter Amount\n\n0. Back\n00. Home\n000. Exit',
     action: 'validate_amount',
     storeAs: 'amount',
     validation: {
@@ -151,10 +193,11 @@ module.exports = {
       max: 5000000,
       required: true
     },
-    errorMessage: 'Invalid amount. Minimum: 100, Maximum: 5,000,000',
+    errorMessage: 'Invalid amount',
     next: 'withdraw_select_account'
   },
 
+  // Account Selection
   withdraw_select_account: {
     id: 'withdraw_select_account',
     type: 'service',
@@ -162,13 +205,28 @@ module.exports = {
     serviceType: 'bank',
     action: 'display_accounts',
     storeAs: 'accounts',
-    next: 'withdraw_enter_pin'
+    next: 'withdraw_confirm'
   },
 
+  // Transaction Confirmation
+  withdraw_confirm: {
+    id: 'withdraw_confirm',
+    type: 'menu',
+    text: 'Confirm withdrawal:\nAmount: UGX {amount}\nTo: {recipientName}\nNetwork: {network}\nAccount: {recipientNumber}\nFrom: {sourceAccount}\n\n1. Confirm\n2. Cancel\n\n0. Back\n00. Home\n000. Exit',
+    options: {
+      '1': { next: 'withdraw_enter_pin', action: 'navigate' },
+      '2': { next: 'withdraw_menu', action: 'navigate' },
+      '0': { next: 'withdraw_select_account', action: 'navigate' },
+      '00': { next: 'main_menu', action: 'navigate' },
+      '000': { action: 'end_session', text: 'Thank you for using EBO SACCO.' }
+    }
+  },
+
+  // PIN Entry (this will trigger the transaction)
   withdraw_enter_pin: {
     id: 'withdraw_enter_pin',
     type: 'input',
-    text: 'Enter PIN to confirm and complete transaction',
+    text: 'Enter PIN to send UGX {amount} to {recipientName} {network} number {recipientNumber} from account {sourceAccount}',
     action: 'process_withdraw_transaction',
     inputType: 'password',
     maxLength: 4,
@@ -177,6 +235,7 @@ module.exports = {
     next: 'withdraw_result'
   },
 
+  // Transaction Processing
   withdraw_result: {
     id: 'withdraw_result',
     type: 'service',
@@ -187,22 +246,22 @@ module.exports = {
     onError: { next: 'withdraw_error', action: 'navigate' }
   },
 
+  // Success
   withdraw_success: {
     id: 'withdraw_success',
     type: 'static',
-    text: 'Transaction successful!\n0. Home\n00. Exit',
-    action: 'continue_or_exit',
+    text: 'Transaction successful!\n\n0. Home\n00. Exit',
     options: {
       '0': { next: 'main_menu', action: 'navigate' },
       '00': { action: 'end_session', text: 'Thank you for using EBO SACCO.' }
     }
   },
 
+  // Error
   withdraw_error: {
     id: 'withdraw_error',
     type: 'static',
-    text: 'Transaction failed. Please try again later.\n0. Home\n00. Exit',
-    action: 'continue_or_exit',
+    text: 'Transaction failed. Please try again later.\n\n0. Home\n00. Exit',
     options: {
       '0': { next: 'main_menu', action: 'navigate' },
       '00': { action: 'end_session', text: 'Thank you for using EBO SACCO.' }

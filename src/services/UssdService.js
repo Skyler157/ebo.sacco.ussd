@@ -35,51 +35,165 @@ class UssdService {
     async handleNewSession(session, input) {
         const { msisdn, sessionId, shortcode } = session;
 
-        // First call - show welcome
+        // First call - get customer info and show personalized welcome (like PHP)
         if (!input || input === '') {
-            const welcomeMenu = await menuService.renderMenu('welcome', session);
-            await sessionManager.updateMenuState(msisdn, sessionId, shortcode, 'welcome');
-            return this.formatContinueResponse(welcomeMenu.text);
+            try {
+                // Call GETCUSTOMER API first (like PHP system)
+                const getCustomerResult = await apiService.getCustomerInfo(msisdn, sessionId, shortcode);
+
+                if (getCustomerResult.status === '000' && getCustomerResult.data) {
+                    // Store customer data in session (like PHP)
+                    const customerData = {
+                        customerId: getCustomerResult.data.customerId || getCustomerResult.data.CustomerID,
+                        customerName: getCustomerResult.data.customerName ||
+                                    `${getCustomerResult.data.FirstName || ''} ${getCustomerResult.data.LastName || ''}`.trim() ||
+                                    getCustomerResult.data.CustomerName,
+                        firstName: getCustomerResult.data.FirstName,
+                        lastName: getCustomerResult.data.LastName,
+                        email: getCustomerResult.data.EmailID || getCustomerResult.data.email,
+                        mobileNumber: getCustomerResult.data.MobileNumber || msisdn,
+                        language: getCustomerResult.data.LanguageID || 'en'
+                    };
+
+                    // Store customer data in session
+                    await sessionManager.storeData(msisdn, sessionId, shortcode, 'customer', customerData);
+
+                    // Show personalized welcome message (like PHP)
+                    const welcomeMenu = await menuService.renderMenu('welcome', { ...session, customer: customerData });
+                    await sessionManager.updateMenuState(msisdn, sessionId, shortcode, 'welcome');
+                    return this.formatContinueResponse(welcomeMenu.text);
+                } else {
+                    // Customer not found - show generic welcome
+                    const welcomeMenu = await menuService.renderMenu('welcome', session);
+                    await sessionManager.updateMenuState(msisdn, sessionId, shortcode, 'welcome');
+                    return this.formatContinueResponse(welcomeMenu.text);
+                }
+            } catch (error) {
+                logger.logError(msisdn, error, { context: 'getcustomer' });
+                // Show generic welcome on error
+                const welcomeMenu = await menuService.renderMenu('welcome', session);
+                await sessionManager.updateMenuState(msisdn, sessionId, shortcode, 'welcome');
+                return this.formatContinueResponse(welcomeMenu.text);
+            }
         }
 
-        // Store PIN
-        await sessionManager.storeData(msisdn, sessionId, shortcode, 'pin', input);
+        // PIN entry - authenticate with stored customer data
+        const customerData = await sessionManager.getData(msisdn, sessionId, shortcode, 'customer');
 
         try {
-            // Call real API
+            // Call LOGIN API with PIN (like PHP system)
             const authResult = await apiService.authenticateCustomer(
                 msisdn,
                 sessionId,
                 shortcode,
-                input
+                input,
+                customerData?.customerId
             );
 
-            // Status 000 or 101 means authentication successful
-            // (101 = PIN change required, but still authenticated)
-            if (authResult.status === '000' || authResult.status === '101') {
-                // Set real authentication data from API response
+            // Handle different authentication statuses according to PHP implementation
+            if (authResult.status === '000') {
+                // Status 000 - authentication successful
+                // Customer data comes from GETCUSTOMER, LOGIN provides accounts/modules
+                if (!customerData || !customerData.customerId) {
+                    logger.logError(msisdn, new Error('Authentication succeeded but no customer data from GETCUSTOMER'), {
+                        customerData,
+                        authResult
+                    });
+                    await sessionManager.endSession(msisdn, sessionId, shortcode);
+                    return this.formatEndResponse('Authentication failed. Customer data not available.');
+                }
+
+                // Merge LOGIN response data with existing customer data (like PHP customer() method)
+                const updatedCustomerData = {
+                    ...customerData,
+                    accounts: authResult.data.accounts || [],
+                    idNumber: authResult.data.idNumber || authResult.data.IDNumber,
+                    menustohide: authResult.data.menustohide || authResult.data.ModulesToHide || []
+                };
+
                 await sessionManager.setAuthentication(msisdn, sessionId, shortcode, {
-                    customerId: authResult.data.customerId,
-                    customerName: authResult.data.customerName,
+                    customerId: customerData.customerId,
+                    customerName: customerData.customerName,
                     accounts: authResult.data.accounts || []
                 });
 
                 await sessionManager.resetPinAttempts(msisdn, sessionId, shortcode);
 
-                // Store PIN expired flag if needed
-                if (authResult.pinExpired) {
-                    await sessionManager.storeData(msisdn, sessionId, shortcode, 'pinExpired', true);
-                }
-
-                // Show main menu
-                const mainMenu = await menuService.renderMenu('main_menu', session);
+                // Show main menu with customer data
+                const updatedSession = await sessionManager.getSession(msisdn, sessionId, shortcode);
+                const mainMenu = await menuService.renderMenu('main_menu', updatedSession);
                 await sessionManager.updateMenuState(msisdn, sessionId, shortcode, 'main_menu');
 
                 return this.formatContinueResponse(mainMenu.text);
+
+            } else if (authResult.status === '101') {
+                // Status 101 - PIN change required
+                if (!customerData || !customerData.customerId) {
+                    logger.logError(msisdn, new Error('PIN change required but no customer data from GETCUSTOMER'), {
+                        customerData,
+                        authResult
+                    });
+                    await sessionManager.endSession(msisdn, sessionId, shortcode);
+                    return this.formatEndResponse('Authentication failed. Customer data not available.');
+                }
+
+                // Store PIN for change requirement
+                await sessionManager.storeData(msisdn, sessionId, shortcode, 'pinExpired', true);
+
+                // Update session with authentication data
+                await sessionManager.setAuthentication(msisdn, sessionId, shortcode, {
+                    customerId: customerData.customerId,
+                    customerName: customerData.customerName,
+                    accounts: authResult.data.accounts || []
+                });
+
+                await sessionManager.resetPinAttempts(msisdn, sessionId, shortcode);
+
+                // Show PIN change menu
+                const updatedSession = await sessionManager.getSession(msisdn, sessionId, shortcode);
+                const pinChangeMenu = await menuService.renderMenu('change_pin_old', updatedSession);
+                await sessionManager.updateMenuState(msisdn, sessionId, shortcode, 'change_pin_old');
+
+                return this.formatContinueResponse(pinChangeMenu.text);
+
+            } else if (authResult.status === '091') {
+                // Status 091 - Wrong PIN
+                logger.logError(msisdn, new Error('Wrong PIN entered'), {
+                    status: authResult.status,
+                    message: authResult.message,
+                    remainingTrials: authResult.remainingTrials
+                });
+
+                // Check if account is locked
+                if (authResult.accountLocked || (authResult.message && authResult.message.toLowerCase().includes('0 trials'))) {
+                    await sessionManager.endSession(msisdn, sessionId, shortcode);
+                    return this.formatEndResponse(authResult.message || 'Account locked due to multiple wrong PIN attempts.');
+                } else {
+                    // Wrong PIN but trials remaining - increment attempts and show error on same screen (like PHP)
+                    await sessionManager.incrementPinAttempts(msisdn, sessionId, shortcode);
+
+                    // Stay on welcome menu and show error message (like PHP)
+                    const welcomeMenu = await menuService.renderMenu('welcome', { ...session, customer: customerData });
+                    const errorMessage = `${authResult.message}\n\n${welcomeMenu.text}`;
+                    return this.formatContinueResponse(errorMessage);
+                }
+
             } else {
-                // Authentication failed (not 000 or 101)
+                // Other authentication failures
+                logger.logError(msisdn, new Error(`Authentication failed with status: ${authResult.status}`), {
+                    status: authResult.status,
+                    message: authResult.message
+                });
+
+                // Increment PIN attempts
+                try {
+                    await sessionManager.incrementPinAttempts(msisdn, sessionId, shortcode);
+                } catch (error) {
+                    return this.formatEndResponse('Maximum PIN attempts exceeded. Please contact support.');
+                }
+
                 await sessionManager.endSession(msisdn, sessionId, shortcode);
-                return this.formatEndResponse('Invalid PIN. Please try again.');
+                return this.formatEndResponse('Authentication failed. Please try again.');
             }
         } catch (error) {
             // Any error means authentication failed
@@ -101,11 +215,149 @@ class UssdService {
 
         // Special handling for PIN authentication on welcome screen
         if (!session.isAuthenticated && currentMenu === 'welcome' && input && input !== '') {
-            return await this.handlePinAuthentication(session, input);
+            // Get stored customer data from GETCUSTOMER call
+            const customerData = await sessionManager.getData(msisdn, sessionId, shortcode, 'customer');
+
+            try {
+                // Call LOGIN API with PIN (like PHP system)
+                const authResult = await apiService.authenticateCustomer(
+                    msisdn,
+                    sessionId,
+                    shortcode,
+                    input,
+                    customerData?.customerId
+                );
+
+                // Handle different authentication statuses according to PHP implementation
+                if (authResult.status === '000') {
+                    // Status 000 - authentication successful
+                    // Customer data comes from GETCUSTOMER, LOGIN provides accounts/modules
+                    if (!customerData || !customerData.customerId) {
+                        logger.logError(msisdn, new Error('Authentication succeeded but no customer data from GETCUSTOMER'), {
+                            customerData,
+                            authResult
+                        });
+                        await sessionManager.endSession(msisdn, sessionId, shortcode);
+                        return this.formatEndResponse('Authentication failed. Customer data not available.');
+                    }
+
+                    // Merge LOGIN response data with existing customer data (like PHP customer() method)
+                    const updatedCustomerData = {
+                        ...customerData,
+                        accounts: authResult.data.accounts || [],
+                        idNumber: authResult.data.idNumber || authResult.data.IDNumber,
+                        menustohide: authResult.data.menustohide || authResult.data.ModulesToHide || []
+                    };
+
+                    await sessionManager.setAuthentication(msisdn, sessionId, shortcode, {
+                        customerId: customerData.customerId,
+                        customerName: customerData.customerName,
+                        accounts: authResult.data.accounts || []
+                    });
+
+                    await sessionManager.resetPinAttempts(msisdn, sessionId, shortcode);
+
+                    // Show main menu with customer data
+                    const updatedSession = await sessionManager.getSession(msisdn, sessionId, shortcode);
+                    const mainMenu = await menuService.renderMenu('main_menu', updatedSession);
+                    await sessionManager.updateMenuState(msisdn, sessionId, shortcode, 'main_menu');
+
+                    return this.formatContinueResponse(mainMenu.text);
+
+                } else if (authResult.status === '101') {
+                    // Status 101 - PIN change required
+                    if (!customerData || !customerData.customerId) {
+                        logger.logError(msisdn, new Error('PIN change required but no customer data from GETCUSTOMER'), {
+                            customerData,
+                            authResult
+                        });
+                        await sessionManager.endSession(msisdn, sessionId, shortcode);
+                        return this.formatEndResponse('Authentication failed. Customer data not available.');
+                    }
+
+                    // Store PIN for change requirement
+                    await sessionManager.storeData(msisdn, sessionId, shortcode, 'pinExpired', true);
+
+                    // Update session with authentication data
+                    await sessionManager.setAuthentication(msisdn, sessionId, shortcode, {
+                        customerId: customerData.customerId,
+                        customerName: customerData.customerName,
+                        accounts: authResult.data.accounts || []
+                    });
+
+                    await sessionManager.resetPinAttempts(msisdn, sessionId, shortcode);
+
+                    // Show PIN change menu
+                    const updatedSession = await sessionManager.getSession(msisdn, sessionId, shortcode);
+                    const pinChangeMenu = await menuService.renderMenu('change_pin_old', updatedSession);
+                    await sessionManager.updateMenuState(msisdn, sessionId, shortcode, 'change_pin_old');
+
+                    return this.formatContinueResponse(pinChangeMenu.text);
+
+                } else if (authResult.status === '091') {
+                    // Status 091 - Wrong PIN
+                    logger.logError(msisdn, new Error('Wrong PIN entered'), {
+                        status: authResult.status,
+                        message: authResult.message,
+                        remainingTrials: authResult.remainingTrials
+                    });
+
+                    // Check if account is locked
+                    if (authResult.accountLocked || (authResult.message && authResult.message.toLowerCase().includes('0 trials'))) {
+                        await sessionManager.endSession(msisdn, sessionId, shortcode);
+                        return this.formatEndResponse(authResult.message || 'Account locked due to multiple wrong PIN attempts.');
+                    } else {
+                        // Wrong PIN but trials remaining - increment attempts and show error on same screen (like PHP)
+                        await sessionManager.incrementPinAttempts(msisdn, sessionId, shortcode);
+
+                        // Stay on welcome menu and show error message (like PHP)
+                        const welcomeMenu = await menuService.renderMenu('welcome', { ...session, customer: customerData });
+                        const errorMessage = `${authResult.message}\n\n${welcomeMenu.text}`;
+                        return this.formatContinueResponse(errorMessage);
+                    }
+
+                } else {
+                    // Other authentication failures
+                    logger.logError(msisdn, new Error(`Authentication failed with status: ${authResult.status}`), {
+                        status: authResult.status,
+                        message: authResult.message
+                    });
+
+                    // Increment PIN attempts
+                    try {
+                        await sessionManager.incrementPinAttempts(msisdn, sessionId, shortcode);
+                    } catch (error) {
+                        return this.formatEndResponse('Maximum PIN attempts exceeded. Please contact support.');
+                    }
+
+                    await sessionManager.endSession(msisdn, sessionId, shortcode);
+                    return this.formatEndResponse('Authentication failed. Please try again.');
+                }
+            } catch (error) {
+                // Any error means authentication failed
+                logger.logError(msisdn, error, { context: 'authentication' });
+                await sessionManager.endSession(msisdn, sessionId, shortcode);
+                return this.formatEndResponse('Authentication failed. Please try again later.');
+            }
         }
 
-        // Get current menu
-        const currentMenuData = await menuService.renderMenu(currentMenu, session);
+        // Get current menu - include stored session data for template replacement
+        const recipientName = await sessionManager.getData(msisdn, sessionId, shortcode, 'recipientName');
+        const recipientNumber = await sessionManager.getData(msisdn, sessionId, shortcode, 'recipientNumber');
+        const network = await sessionManager.getData(msisdn, sessionId, shortcode, 'network');
+        const amount = await sessionManager.getData(msisdn, sessionId, shortcode, 'amount');
+        const sourceAccount = await sessionManager.getData(msisdn, sessionId, shortcode, 'sourceAccount');
+
+        const enrichedSession = {
+            ...session,
+            recipientName: recipientName || session.recipientName,
+            recipientNumber: recipientNumber || session.recipientNumber,
+            network: network || session.network,
+            amount: amount || session.amount,
+            sourceAccount: sourceAccount || session.sourceAccount
+        };
+
+        const currentMenuData = await menuService.renderMenu(currentMenu, enrichedSession);
 
         // Handle empty input for menu selection
         if (!input || input === '') {
@@ -115,6 +367,50 @@ class UssdService {
             }
             // If no input and we're expecting input, show error
             return this.formatContinueResponse(`Invalid input. Please try again.\n\n${currentMenuData.text}`);
+        }
+
+        // Handle navigation commands before processing as menu selections
+        if (input === '0' || input === '00' || input === '000') {
+            let nextMenuId;
+
+            if (input === '000') {
+                // Exit - end session
+                await sessionManager.endSession(msisdn, sessionId, shortcode);
+                return this.formatEndResponse('Thank you for using EBO SACCO.');
+            } else if (input === '00') {
+                // Go to home/main menu
+                nextMenuId = 'main_menu';
+            } else if (input === '0') {
+                // Go back - determine appropriate back menu based on current menu
+                const backMenuMap = {
+                    'withdraw_menu': 'main_menu',
+                    'withdraw_mtn_options': 'withdraw_menu',
+                    'withdraw_airtel_options': 'withdraw_menu',
+                    'withdraw_mtn_other': 'withdraw_mtn_options',
+                    'withdraw_airtel_other': 'withdraw_airtel_options',
+                    'withdraw_mtn_confirm': 'withdraw_mtn_options',
+                    'withdraw_airtel_confirm': 'withdraw_airtel_options',
+                    'withdraw_amount': currentMenu.includes('mtn') ? 'withdraw_mtn_confirm' : 'withdraw_airtel_confirm',
+                    'withdraw_select_account': 'withdraw_amount',
+                    'withdraw_confirm': 'withdraw_select_account',
+                    'withdraw_validation_error': 'withdraw_menu',
+                    'withdraw_error': 'withdraw_menu',
+                    'withdraw_success': 'main_menu'
+                };
+
+                nextMenuId = backMenuMap[currentMenu] || 'main_menu';
+            }
+
+            if (nextMenuId) {
+                await sessionManager.updateMenuState(msisdn, sessionId, shortcode, nextMenuId);
+                const nextMenuData = await menuService.renderMenu(nextMenuId, session);
+
+                if (nextMenuData.type === 'service') {
+                    return await this.handleServiceMenu(nextMenuData, session);
+                }
+
+                return this.formatContinueResponse(nextMenuData.text);
+            }
         }
 
         // Validate input if required
@@ -224,6 +520,36 @@ class UssdService {
         }
     }
 
+    // Network detection utility based on PHP prefix() method
+    detectNetwork(phoneNumber) {
+        // Remove any leading 0 and add 256 prefix
+        const normalizedNumber = phoneNumber.startsWith('0') ? '256' + phoneNumber.substring(1) : phoneNumber;
+
+        // MTN prefixes
+        if (normalizedNumber.match(/^256(31|39|78|77|76|79)/)) {
+            return {
+                network: 'MTN',
+                mno: 'MTN',
+                b2cvalidation: 'MTNMONEYVALIDATION',
+                b2c: '007001017',
+                c2b: 'UGANDAMTNC2B'
+            };
+        }
+
+        // Airtel prefixes
+        if (normalizedNumber.match(/^256(20|70|75|74)/)) {
+            return {
+                network: 'AIRTEL',
+                mno: 'AIRTEL',
+                b2cvalidation: 'AIRTELMMONEYVALIDATION',
+                b2c: '007001016',
+                c2b: 'AIRTELC2B'
+            };
+        }
+
+        return false;
+    }
+
     async handleServiceMenu(menu, session) {
         const { msisdn, sessionId, shortcode } = session;
 
@@ -231,18 +557,49 @@ class UssdService {
             let serviceResult;
 
             switch (menu.service) {
-                case 'validateWallet':
                 case 'validateOwnWallet':
-                    const walletNumber = menu.service === 'validateOwnWallet' ?
-                        msisdn :
-                        await sessionManager.getData(msisdn, sessionId, shortcode, 'recipientNumber') || msisdn;
+                    // For own wallet, use customer's own number - determine network from menu ID
                     const network = menu.id.includes('mtn') ? 'mtn' : 'airtel';
+                    const ownNumber = '0' + msisdn.substring(3); // Convert 256XXXXXXXXX to 0XXXXXXXXX
+                    const ownNetworkInfo = this.detectNetwork(ownNumber);
+
+                    if (!ownNetworkInfo) {
+                        serviceResult = { status: '001', message: 'Invalid network for your number' };
+                    } else if (ownNetworkInfo.network.toLowerCase() !== network) {
+                        // Check if customer's number matches the selected network
+                        serviceResult = { status: '001', message: `Your number is not a valid ${network.toUpperCase()} number` };
+                    } else {
+                        // Validate wallet using customer's own number
+                        serviceResult = await apiService.validateWallet(msisdn, sessionId, shortcode, {
+                            customerId: session.customerId,
+                            walletNumber: '256' + ownNumber.substring(1),
+                            network: network
+                        });
+
+                        if (serviceResult.status === '000') {
+                            // Store wallet details for confirmation
+                            await sessionManager.storeData(msisdn, sessionId, shortcode, 'recipientNumber', '256' + ownNumber.substring(1));
+                            await sessionManager.storeData(msisdn, sessionId, shortcode, 'recipientName', session.customerName || 'Self');
+                            await sessionManager.storeData(msisdn, sessionId, shortcode, 'network', ownNetworkInfo.network);
+                        }
+                    }
+                    break;
+
+                case 'validateWallet':
+                    const recipientNumber = await sessionManager.getData(msisdn, sessionId, shortcode, 'recipientNumber');
+                    const walletNetwork = menu.id.includes('mtn') ? 'mtn' : 'airtel';
 
                     serviceResult = await apiService.validateWallet(msisdn, sessionId, shortcode, {
                         customerId: session.customerId,
-                        walletNumber,
-                        network
+                        walletNumber: recipientNumber,
+                        network: walletNetwork
                     });
+
+                    if (serviceResult.status === '000') {
+                        // Store validation result
+                        await sessionManager.storeData(msisdn, sessionId, shortcode, 'recipientName', serviceResult.data?.accountName || 'Unknown');
+                        await sessionManager.storeData(msisdn, sessionId, shortcode, 'network', walletNetwork.toUpperCase());
+                    }
                     break;
 
                 case 'validateDepositNumber':
@@ -326,17 +683,51 @@ class UssdService {
                     const withdrawSourceAccount = await sessionManager.getData(msisdn, sessionId, shortcode, 'sourceAccount');
                     const withdrawRecipientNumber = await sessionManager.getData(msisdn, sessionId, shortcode, 'recipientNumber');
                     const withdrawPin = await sessionManager.getData(msisdn, sessionId, shortcode, 'pin');
-                    const withdrawNetwork = menu.id.includes('mtn') ? 'mtn' : 'airtel';
+                    const withdrawRecipientName = await sessionManager.getData(msisdn, sessionId, shortcode, 'recipientName') || 'Unknown';
 
-                    serviceResult = await apiService.transferFunds(msisdn, sessionId, shortcode, {
-                        customerId: session.customerId,
-                        sourceAccount: withdrawSourceAccount,
-                        destinationAccount: withdrawRecipientNumber,
-                        amount: withdrawAmount,
-                        pin: withdrawPin,
-                        transferType: 'MOBILE_MONEY',
-                        network: withdrawNetwork
-                    });
+                    // Detect network and get merchant ID for transfer
+                    const networkInfo = this.detectNetwork('0' + withdrawRecipientNumber.substring(3));
+                    const merchantId = networkInfo ? networkInfo.b2c : '007001017'; // Default to MTN
+                    const networkName = networkInfo ? networkInfo.network : 'MTN';
+
+                    // Use PAYBILL service with mobile money transfer payload (matching PHP)
+                    const payload = {
+                        TRXSOURCE: "USSD",
+                        CODEBASE: config.app.codebase,
+                        APPNAME: config.app.name,
+                        VERSIONNUMBER: config.app.version,
+                        CUSTOMERID: session.customerId,
+                        MOBILENUMBER: msisdn,
+                        SHORTCODE: shortcode,
+                        FORMID: "PAYBILL",
+                        SESSIONID: sessionId,
+                        UNIQUEID: require('../core/encryption/ElmaEncryptionService').generateTransactionId(),
+                        COUNTRY: config.app.country,
+                        BANKID: config.app.bankId,
+                        MERCHANTID: merchantId,
+                        PAYBILL: {
+                            BANKACCOUNTID: withdrawSourceAccount,
+                            MERCHANTID: merchantId,
+                            ACCOUNTID: withdrawRecipientNumber,
+                            TRXDESCRIPTION: null,
+                            AMOUNT: withdrawAmount,
+                            MOBILENUMBER: null,
+                            INFOFIELD1: `${networkName} MONEY`,
+                            INFOFIELD2: networkName,
+                            INFOFIELD3: withdrawRecipientName,
+                            INFOFIELD4: null,
+                            INFOFIELD5: null,
+                            INFOFIELD6: null,
+                            INFOFIELD7: null,
+                            INFOFIELD8: null,
+                            INFOFIELD9: null
+                        },
+                        ENCRYPTEDFIELDS: {
+                            PIN: withdrawPin // Already encrypted
+                        }
+                    };
+
+                    serviceResult = await apiService.callService('bank', payload, msisdn);
                     break;
 
                 case 'processDepositTransaction':
@@ -436,7 +827,12 @@ class UssdService {
 
                 await sessionManager.updateMenuState(msisdn, sessionId, shortcode, nextMenu);
 
-                // Format success message
+                // For validation services, just proceed to next menu without displaying result
+                if (menu.service === 'validateOwnWallet' || menu.service === 'validateWallet') {
+                    return this.formatContinueResponse(nextMenuData.text);
+                }
+
+                // Format success message for other services
                 let successMessage = nextMenuData.text;
                 if (serviceResult.data) {
                     successMessage = menuService.formatBalance(serviceResult.data) || successMessage;
@@ -444,14 +840,28 @@ class UssdService {
 
                 return this.formatContinueResponse(successMessage);
             } else {
-                // Service call failed
+                // Service call failed - check for specific error types
+                let errorMessage = serviceResult.message || 'Service failed';
+
+                // Handle PIN validation errors specifically for transactions
+                if (serviceResult.message &&
+                    (serviceResult.message.toLowerCase().includes('invalid user name or password') ||
+                     serviceResult.message.toLowerCase().includes('invalid pin') ||
+                     serviceResult.message.toLowerCase().includes('wrong pin'))) {
+                    // Wrong PIN for transaction - show specific message and allow retry
+                    errorMessage = `Dear ${session.customerName}, your transaction failed. You entered an invalid PIN`;
+                } else if (!serviceResult.message || serviceResult.message.trim() === '') {
+                    // Generic error
+                    errorMessage = `Dear ${session.customerName}, sorry this service is temporarily unavailable. Please try again later`;
+                }
+
                 const errorMenu = menu.onError ? menu.onError.next : 'error';
                 const errorMenuData = await menuService.renderMenu(errorMenu, session);
 
                 await sessionManager.updateMenuState(msisdn, sessionId, shortcode, errorMenu);
 
                 return this.formatContinueResponse(
-                    `${serviceResult.message || 'Service failed'}\n\n${errorMenuData.text}`
+                    `${errorMessage}\n\n${errorMenuData.text}`
                 );
             }
         } catch (error) {

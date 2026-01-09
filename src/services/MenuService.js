@@ -36,11 +36,29 @@ class MenuService {
             return await this.renderServiceMenu(menu, sessionData);
         }
 
-        // Render static menu text
-        let text = menu.text;
+  // Render static menu text
+  let text = menu.text;
 
-        // Replace template variables
-        text = this.replaceTemplateVariables(text, sessionData);
+  // Special handling for welcome menu - show customer name if available
+  if (menuId === 'welcome') {
+    if (sessionData.customer && sessionData.customer.customerName) {
+      // PHP style: "Hello [FirstName] [LastName], welcome to EBO SACCO. Please enter your PIN to continue"
+      const customerName = sessionData.customer.customerName;
+      text = `Hello ${customerName}, welcome to EBO SACCO. Please enter your PIN to continue`;
+    } else {
+      // Fallback to generic welcome
+      text = 'Welcome to EBO SACCO. Please enter your PIN to continue';
+    }
+  }
+
+  // Special handling for main_menu customer name
+  if (menuId === 'main_menu') {
+    const customerName = sessionData.customerName || 'Customer';
+    text = text.replace('{customerName}', customerName);
+  }
+
+  // Replace template variables
+  text = this.replaceTemplateVariables(text, sessionData);
 
         // Apply language translation if needed
         if (sessionData.language && sessionData.language !== 'en') {
@@ -76,13 +94,13 @@ class MenuService {
         };
     }
 
-    replaceTemplateVariables(text, data) {
-        if (!text || !data) return text;
+  replaceTemplateVariables(text, data) {
+    if (!text || !data) return text;
 
-        return text.replace(/\$\{(\w+)\}/g, (match, key) => {
-            return data[key] || match;
-        });
-    }
+    return text.replace(/\{(\w+)\}/g, (match, key) => {
+      return data[key] || match;
+    });
+  }
 
     translateText(text, language) {
         // Simple translation - in production, use a proper translation service
@@ -136,10 +154,33 @@ class MenuService {
     }
 
 getNextMenu(currentMenuId, input, sessionData) {
+  // Default navigation for common flows
+  const defaultNavigation = {
+    'welcome': { next: 'main_menu', action: 'navigate' },
+    'main_menu': {
+      '1': { next: 'withdraw_menu', action: 'navigate' },
+      '2': { next: 'deposit_menu', action: 'navigate' },
+      '3': { next: 'airtime_menu', action: 'navigate' },
+      '4': { next: 'payments_menu', action: 'navigate' },
+      '5': { next: 'balance_menu', action: 'navigate' },
+      '6': { next: 'internal_transfers_menu', action: 'navigate' },
+      '7': { next: 'mini_statement_menu', action: 'navigate' },
+      '8': { next: 'settings_menu', action: 'navigate' },
+      '0': { next: 'end_session', action: 'end_session' }
+    }
+  };
+
+  // Check default navigation first for known menus
+  if (defaultNavigation[currentMenuId] && defaultNavigation[currentMenuId][input]) {
+    return defaultNavigation[currentMenuId][input];
+  }
+
+  // Fallback to menu config options
   const currentMenu = this.getMenu(currentMenuId);
 
   if (currentMenu.type === 'menu' && currentMenu.options) {
-    const option = currentMenu.options[input];
+    const inputKey = String(input);
+    const option = currentMenu.options[inputKey];
 
     if (option) {
       return {
@@ -159,26 +200,6 @@ getNextMenu(currentMenuId, input, sessionData) {
     };
   }
 
-  // Default navigation for common flows (fallback)
-  const defaultNavigation = {
-    'welcome': { next: 'main_menu', action: 'navigate' },
-    'main_menu': {
-      '1': { next: 'withdraw_menu', action: 'navigate' },
-      '2': { next: 'deposit_menu', action: 'navigate' },
-      '3': { next: 'airtime_menu', action: 'navigate' },
-      '4': { next: 'payments_menu', action: 'navigate' },
-      '5': { next: 'balance_menu', action: 'navigate' },
-      '6': { next: 'internal_transfers_menu', action: 'navigate' },
-      '7': { next: 'mini_statement_menu', action: 'navigate' },
-      '8': { next: 'settings_menu', action: 'navigate' },
-      '0': { next: 'end_session', action: 'end_session' }
-    }
-  };
-
-  if (defaultNavigation[currentMenuId] && defaultNavigation[currentMenuId][input]) {
-    return defaultNavigation[currentMenuId][input];
-  }
-
   return null;
 }
     async processMenuAction(menu, input, sessionData) {
@@ -192,6 +213,7 @@ getNextMenu(currentMenuId, input, sessionData) {
             validate_mtn_number: () => this.validatePhoneNumber(input, 'mtn'),
             validate_airtel_number: () => this.validatePhoneNumber(input, 'airtel'),
             validate_amount: () => this.validateAmount(input),
+            set_own_number: () => this.setOwnNumber(sessionData),
             process_transaction: () => ({ success: true }),
             navigate: () => ({ success: true }),
             end_session: () => ({ endSession: true })
@@ -202,6 +224,11 @@ getNextMenu(currentMenuId, input, sessionData) {
         }
 
         return { success: true };
+    }
+
+    setOwnNumber(sessionData) {
+        // Set recipient number to customer's own MSISDN
+        return { success: true, recipientNumber: sessionData.msisdn };
     }
 
     async handlePinAuthentication(pin, sessionData) {
